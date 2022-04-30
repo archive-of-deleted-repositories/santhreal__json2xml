@@ -15,18 +15,19 @@ This module works with Python 3.7+
 import collections
 import logging
 import numbers
+import types
 from random import randint
-from typing import Any, Dict, Union, Tuple, List, Optional
+from typing import Any, Dict, Union, Tuple, List, Optional, Set
 from typing_extensions import reveal_type
 from collections.abc import Callable
-from datetime import datetime
+import datetime
 
 from defusedxml.minidom import parseString
 
 LOG = logging.getLogger("dicttoxml")
 
 
-ids = []  # initialize list of unique ids
+ids: List[str] = []  # initialize list of unique ids
 
 
 def make_id(element: str, start: int = 100000, end: int = 999999) -> str:
@@ -41,14 +42,16 @@ def get_unique_id(element: str) -> str:
     while dup:
         if this_id not in ids:
             dup = False
+            print("get_unique_id", type(this_id))
             ids.append(this_id)
         else:
+            print("get_unique_id", type(this_id))
             this_id = make_id(element)
     return ids[-1]
 
 
 ELEMENT = Union[
-    str, int, float, bool, numbers.Number, collections.abc.Iterable, datetime, None
+    str, int, float, bool, numbers.Number, collections.abc.Sequence, datetime.datetime, datetime.date, None, Dict[str, Any]
 ]
 
 
@@ -68,13 +71,14 @@ def get_xml_type(val: ELEMENT) -> str:
             return "number"
         if isinstance(val, dict):
             return "dict"
-        if isinstance(val, collections.abc.Iterable):
+        if isinstance(val, collections.abc.Sequence):
             return "list"
     else:
         return "null"
     return type(val).__name__
 
-def escape_xml(s: str) -> str:
+
+def escape_xml(s: Union[str, numbers.Number]) -> str:
     if isinstance(s, str):
         s = str(s)  # avoid UnicodeDecodeError
         s = s.replace("&", "&amp;")
@@ -82,7 +86,7 @@ def escape_xml(s: str) -> str:
         s = s.replace("'", "&apos;")
         s = s.replace("<", "&lt;")
         s = s.replace(">", "&gt;")
-    return s
+    return str(s)
 
 
 def make_attrstring(attr: dict[str, Any]) -> str:
@@ -134,7 +138,7 @@ def make_valid_xml_name(key: str, attr: Dict[str, Any]) -> Tuple[str, Dict[str, 
     return key, attr
 
 
-def wrap_cdata(s: str) -> str:
+def wrap_cdata(s: Union[str, numbers.Number]) -> str:
     """Wraps a string into CDATA sections"""
     s = str(s).replace("]]>", "]]]]><![CDATA[>")
     return "<![CDATA[" + s + "]]>"
@@ -178,7 +182,7 @@ def convert(
             key=item_name, val=obj, attr_type=attr_type, attr={}, cdata=cdata
         )
 
-    if hasattr(obj, "isoformat"):
+    if hasattr(obj, "isoformat") and isinstance(obj, (datetime.datetime, datetime.date)):
         return convert_kv(
             key=item_name,
             val=obj.isoformat(),
@@ -189,27 +193,46 @@ def convert(
 
     print("def convert attr_type", type(attr_type))
     if obj is None:
-        import pdb; pdb.set_trace()
-        print(attr_type)
-        return convert_none(item_name, "", attr_type, cdata)
+        return convert_none(key=item_name, attr_type=attr_type, cdata=cdata)
 
     if isinstance(obj, dict):
         return convert_dict(obj, ids, parent, attr_type, item_func, cdata, item_wrap)
 
-    if isinstance(obj, collections.abc.Iterable):
+    if isinstance(obj, collections.abc.Sequence):
         return convert_list(obj, ids, parent, attr_type, item_func, cdata, item_wrap)
 
     raise TypeError(f"Unsupported data type: {obj} ({type(obj).__name__})")
 
 
-def is_primitive_type(val):
+def is_primitive_type(val: Any) -> bool:
     t = get_xml_type(val)
     return t in {"str", "int", "float", "bool", "number", "null"}
 
 
 def dict2xml_str(
-    attr_type, attr, item, item_func, cdata, item_name, item_wrap, parentIsList
-):
+    attr_type: bool,
+    attr: Dict[str, Any],
+    item: Dict[str, Any],
+    item_func: Callable[[str], str],
+    cdata: bool,
+    item_name: str,
+    item_wrap: bool,
+    parentIsList: bool,
+) -> str:
+    """
+    dict2xml_str <class 'bool'> <class 'dict'> <class 'dict'> <class 'function'> <class 'bool'> <class 'str'> <class 'bool'> <class 'bool'>
+    """
+    print(
+        "dict2xml_str",
+        type(attr_type),
+        type(attr),
+        type(item),
+        type(item_func),
+        type(cdata),
+        type(item_name),
+        type(item_wrap),
+        type(parentIsList),
+    )
     keys_str = ", ".join(str(key) for key in item)
     LOG.info(
         f'Inside dict_item2xml_str: type(obj)="{type(item).__name__}", keys="{keys_str}"'
@@ -235,21 +258,45 @@ def dict2xml_str(
     return f"<{item_name}{attrstring}>{subtree}</{item_name}>"
 
 
-def list2xml_str(attr_type: List[str], attr: Dict[str, Any], item, item_func: collections.abc.Iterable, cdata: bool, item_name: str, item_wrap: bool) -> str:
+def list2xml_str(
+    attr_type: bool,
+    attr: Dict[str, Any],
+    item: collections.abc.Sequence[Any],
+    item_func: Callable[[str], str],
+    cdata: bool,
+    item_name: str,
+    item_wrap: bool,
+) -> str:
     if attr_type:
         attr["type"] = get_xml_type(item)
     flat = False
     if item_name.endswith("@flat"):
         item_name = item_name[0:-5]
         flat = True
-    subtree = convert_list(item, ids, item_name, attr_type, item_func, cdata, item_wrap)
+    subtree = convert_list(
+        items=item,
+        ids=ids,
+        parent=item_name,
+        attr_type=attr_type,
+        item_func=item_func,
+        cdata=cdata,
+        item_wrap=item_wrap,
+    )
     if flat or (len(item) > 0 and is_primitive_type(item[0]) and not item_wrap):
         return subtree
     attrstring = make_attrstring(attr)
     return f"<{item_name}{attrstring}>{subtree}</{item_name}>"
 
 
-def convert_dict(obj: Dict[str, Any], ids: List[int], parent: str, attr_type: bool, item_func:Callable[[str], str], cdata: bool, item_wrap: bool) -> str:
+def convert_dict(
+    obj: Dict[str, Any],
+    ids: List[str],
+    parent: str,
+    attr_type: bool,
+    item_func: Callable[[str], str],
+    cdata: bool,
+    item_wrap: bool,
+) -> str:
     """Converts a dict into an XML string."""
     keys_str = ", ".join(str(key) for key in obj)
     LOG.info(
@@ -259,7 +306,7 @@ def convert_dict(obj: Dict[str, Any], ids: List[int], parent: str, attr_type: bo
     if LOG.getEffectiveLevel() <= logging.DEBUG:
         LOG.debug(f'  obj="{str(obj)}"')
 
-    output = []
+    output: List[str] = []
     addline = output.append
 
     for key, val in obj.items():
@@ -305,13 +352,22 @@ def convert_dict(obj: Dict[str, Any], ids: List[int], parent: str, attr_type: bo
                 )
             )
 
-        elif isinstance(val, collections.abc.Iterable):
+        elif isinstance(val, collections.abc.Sequence):
+            print("DEBUGNEW", type(item_func))
             addline(
-                list2xml_str(attr_type, attr, val, item_func, cdata, key, item_wrap)
+                list2xml_str(
+                    attr_type=attr_type,
+                    attr=attr,
+                    item=val,
+                    item_func=item_func,
+                    cdata=cdata,
+                    item_name=key,
+                    item_wrap=item_wrap,
+                )
             )
 
         elif not val:
-            addline(convert_none(key, val, attr_type, attr, cdata))
+            addline(convert_none(key, attr_type, attr, cdata))
 
         else:
             raise TypeError(f"Unsupported data type: {val} ({type(val).__name__})")
@@ -320,8 +376,8 @@ def convert_dict(obj: Dict[str, Any], ids: List[int], parent: str, attr_type: bo
 
 
 def convert_list(
-    items: List[Any],
-    ids: List[int],
+    items: collections.abc.Sequence[Any],
+    ids: List[str],
     parent: str,
     attr_type: bool,
     item_func: Callable[[str], str],
@@ -334,7 +390,7 @@ def convert_list(
     if LOG.getEffectiveLevel() <= logging.DEBUG:
         LOG.debug(f'  items="{str(items)}"')
 
-    output = []
+    output: List[str] = []
     addline = output.append
 
     item_name = item_func(parent)
@@ -353,6 +409,8 @@ def convert_list(
             LOG.debug(f'  item="{str(item)}"')
 
         attr = {} if not ids else {"id": f"{this_id}_{i + 1}"}
+
+        print("DEBUG list_str", type(item_func))
 
         if isinstance(item, bool):
             addline(convert_bool(item_name, item, attr_type, attr, cdata))
@@ -397,15 +455,22 @@ def convert_list(
                 )
             )
 
-        elif isinstance(item, collections.abc.Iterable):
+        elif isinstance(item, collections.abc.Sequence):
+            print("DEBUGNEW", type(item_func))
             addline(
                 list2xml_str(
-                    attr_type, attr, item, item_func, cdata, item_name, item_wrap
+                    attr_type=attr_type,
+                    attr=attr,
+                    item=item,
+                    item_func=item_func,
+                    cdata=cdata,
+                    item_name=item_name,
+                    item_wrap=item_wrap,
                 )
             )
 
         elif item is None:
-            addline(convert_none(item_name, None, attr_type, attr, cdata))
+            addline(convert_none(item_name, attr_type, attr, cdata))
 
         else:
             raise TypeError(f"Unsupported data type: {item} ({type(item).__name__})")
@@ -413,12 +478,17 @@ def convert_list(
 
 
 def convert_kv(
-    key: str, val: Union[str, numbers.Number], attr_type: bool, attr: Dict[str, Any] = {}, cdata: bool = False
+    key: str,
+    val: Union[str, numbers.Number],
+    attr_type: bool,
+    attr: Dict[str, Any] = {},
+    cdata: bool = False,
 ) -> str:
     """Converts a number or string into an XML element"""
     LOG.info(
         f'Inside convert_kv(): key="{str(key)}", val="{str(val)}", type(val) is: "{type(val).__name__}"'
     )
+    print("convert_kv", type(val))
     key, attr = make_valid_xml_name(key, attr)
 
     if attr_type:
@@ -443,13 +513,15 @@ def convert_bool(
     return f"<{key}{attrstring}>{str(val).lower()}</{key}>"
 
 
-def convert_none(key: str, val: None, attr_type: bool, attr: Dict[str, Any]={}, cdata: bool = False) -> str:
+def convert_none(
+    key: str,attr_type: bool, attr: Dict[str, Any] = {}, cdata: bool = False
+) -> str:
     """Converts a null value into an XML element"""
-    LOG.info(f'Inside convert_none(): key="{str(key)}"')
+    # LOG.info(f'Inside convert_none(): key="{str(key)}" val={type(val)}')
     key, attr = make_valid_xml_name(key, attr)
 
     if attr_type:
-        attr["type"] = get_xml_type(val)
+        attr["type"] = get_xml_type(None)
     attrstring = make_attrstring(attr)
     return f"<{key}{attrstring}></{key}>"
 
@@ -458,7 +530,7 @@ def dicttoxml(
     obj: Dict[str, Any],
     root: bool = True,
     custom_root: str = "root",
-    ids: Optional[List[int]]  = None,
+    ids: Optional[List[int]] = None,
     attr_type: bool = True,
     item_wrap: bool = True,
     item_func: Callable[[str], str] = default_item_func,
@@ -495,7 +567,9 @@ def dicttoxml(
           {'list': {'@attrs': {'a':'b','c':'d'}, '@val': [4, 5, 6]}
           which results in <list a="b" c="d"><item>4</item><item>5</item><item>6</item></list>
     """
-    LOG.info(f'Inside dicttoxml(): type(obj) is: "{type(obj).__name__}", type(ids") is : {type(ids).__name__}')
+    LOG.info(
+        f'Inside dicttoxml(): type(obj) is: "{type(obj).__name__}", type(ids") is : {type(ids).__name__}'
+    )
     # avoid cpu consuming object serialization (problem for large objects) => extra if
     if LOG.getEffectiveLevel() <= logging.DEBUG:
         LOG.debug(f'  obj="{str(obj)}"')
