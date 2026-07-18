@@ -207,10 +207,23 @@ def test_escape_xml_matches_full_replacement_chain(value: str) -> None:
         ({"a": 1}, ' a="1"'),
         ({"type": "str"}, ' type="str"'),
         ({"type": "str", "id": 1}, ' type="str" id="1"'),
+        ({"type": 'foo"bar'}, ' type="foo&quot;bar"'),
     ],
 )
 def test_make_attrstring_pins_spacing_and_order(attrs: dict[str, Any], expected: str) -> None:
     assert dicttoxml.make_attrstring(attrs) == expected
+
+
+# @lat: [[tests#XML helper behavior#Custom type attr value stays escaped]]
+def test_dicttoxml_escapes_custom_type_attr_value() -> None:
+    xml = dicttoxml.dicttoxml(
+        {"child": {"@attrs": {"type": 'foo"bar'}, "@val": "hello"}},
+        attr_type=False,
+    )
+    assert xml == (
+        b'<?xml version="1.0" encoding="UTF-8" ?>'
+        b'<root><child type="foo&quot;bar">hello</child></root>'
+    )
 
 
 # @lat: [[tests#XML helper behavior#Valid-name helpers preserve caller attrs]]

@@ -161,7 +161,7 @@ def make_attrstring(attr: dict[str, Any]) -> str:
     if len(attr) == 1:
         key, val = next(iter(attr.items()))
         if key == "type":
-            return f' type="{val}"'
+            return f' type="{escape_xml(val)}"'
         validate_xml_attr_names(attr)
         return f' {key}="{escape_xml(val)}"'
     validate_xml_attr_names(attr)
